@@ -1,0 +1,39 @@
+# Claude AI files — not for version control
+CLAUDE.md
+.claude/
+
+# Environment secrets
+.env
+
+# Maven build output
+target/
+*/target/
+*.jar
+*.war
+*.ear
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# VS Code
+.vscode/
+
+# Eclipse
+.project
+.classpath
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Docker build cache
+.dockerignore

@@ -1,0 +1,124 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: api-gateway
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      timeout: 2000ms
+  cloud:
+    gateway:
+      default-filters:
+        - DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials, RETAIN_UNIQUE
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOrigins: "*"
+            allowedMethods: "*"
+            allowedHeaders: "*"
+      routes:
+        # Auth Service
+        - id: auth-service
+          uri: ${AUTH_SERVICE_URL:http://localhost:8081}
+          predicates:
+            - Path=/auth/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: auth-cb
+                fallbackUri: forward:/fallback
+
+        # URL Service
+        - id: url-service
+          uri: ${URL_SERVICE_URL:http://localhost:8082}
+          predicates:
+            - Path=/api/v1/urls/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: url-cb
+                fallbackUri: forward:/fallback
+
+        # Analytics Service
+        - id: analytics-service
+          uri: ${ANALYTICS_SERVICE_URL:http://localhost:8084}
+          predicates:
+            - Path=/api/v1/analytics/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: analytics-cb
+                fallbackUri: forward:/fallback
+
+        # Tenant Service
+        - id: tenant-service
+          uri: ${TENANT_SERVICE_URL:http://localhost:8085}
+          predicates:
+            - Path=/api/v1/tenants/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: tenant-cb
+                fallbackUri: forward:/fallback
+
+        # Redirect Service — short codes (alphanumeric, length validated in controller)
+        - id: redirect-service
+          uri: ${REDIRECT_SERVICE_URL:http://localhost:8083}
+          predicates:
+            - Path=/{code:[A-Za-z0-9]+}
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: redirect-cb
+                fallbackUri: forward:/fallback
+
+        # Redirect info endpoint
+        - id: redirect-resolve
+          uri: ${REDIRECT_SERVICE_URL:http://localhost:8083}
+          predicates:
+            - Path=/resolve/**
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      auth-cb:
+        slidingWindowSize: 10
+        failureRateThreshold: 50
+        waitDurationInOpenState: 10s
+      url-cb:
+        slidingWindowSize: 10
+        failureRateThreshold: 50
+        waitDurationInOpenState: 10s
+      redirect-cb:
+        slidingWindowSize: 20
+        failureRateThreshold: 60
+        waitDurationInOpenState: 5s
+      analytics-cb:
+        slidingWindowSize: 10
+        failureRateThreshold: 50
+        waitDurationInOpenState: 10s
+      tenant-cb:
+        slidingWindowSize: 10
+        failureRateThreshold: 50
+        waitDurationInOpenState: 10s
+
+jwt:
+  secret: ${JWT_SECRET:ShortelDevSecretKeyMustBeAtLeast256BitsLongForHMACSHA256Algorithm}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,gateway
+  endpoint:
+    health:
+      show-details: always
+    gateway:
+      enabled: true
+
+logging:
+  level:
+    org.springframework.cloud.gateway: INFO

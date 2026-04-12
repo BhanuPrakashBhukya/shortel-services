@@ -1,0 +1,303 @@
+version: '3.8'
+
+networks:
+  shortel-network:
+    driver: bridge
+
+volumes:
+  mysql-data:
+  redis-data:
+
+services:
+
+  # ─── Infrastructure ────────────────────────────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    container_name: shortel-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-shortel_root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-shortel}
+      MYSQL_USER: ${MYSQL_USER:-shortel}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-shortel_pass}
+    ports:
+      - "3307:3306"   # host:3307 to avoid conflict with local MySQL
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./init-db:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-shortel_root}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    networks:
+      - shortel-network
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: shortel-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shortel-network
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: shortel-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ["CMD-SHELL", "cub zk-ready localhost:2181 10 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 15s
+      retries: 10
+      start_period: 30s
+    networks:
+      - shortel-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: shortel-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_LOG_RETENTION_HOURS: 72
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 40s
+    networks:
+      - shortel-network
+
+  # ─── Microservices ─────────────────────────────────────────────────────────
+  # Build context is the root (.) so Dockerfiles can access the root pom.xml
+  id-generator-service:
+    build:
+      context: .
+      dockerfile: id-generator-service/Dockerfile
+    container_name: shortel-id-generator
+    ports:
+      - "8086:8086"
+    environment:
+      SERVER_PORT: 8086
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8086/actuator/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    networks:
+      - shortel-network
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: auth-service/Dockerfile
+    container_name: shortel-auth
+    ports:
+      - "8081:8081"
+    environment:
+      SERVER_PORT: 8081
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      JWT_SECRET: ${JWT_SECRET:-ShortelDevSecretKeyMustBeAtLeast256BitsLongForHMACSHA256Algorithm}
+      JWT_ACCESS_TOKEN_TTL_MINUTES: 15
+      JWT_REFRESH_TOKEN_TTL_DAYS: 7
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/actuator/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    networks:
+      - shortel-network
+
+  tenant-service:
+    build:
+      context: .
+      dockerfile: tenant-service/Dockerfile
+    container_name: shortel-tenant
+    ports:
+      - "8085:8085"
+    environment:
+      SERVER_PORT: 8085
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-shortel}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: ${MYSQL_USER:-shortel}
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD:-shortel_pass}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8085/actuator/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - shortel-network
+
+  url-service:
+    build:
+      context: .
+      dockerfile: url-service/Dockerfile
+    container_name: shortel-url
+    ports:
+      - "8082:8082"
+    environment:
+      SERVER_PORT: 8082
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-shortel}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: ${MYSQL_USER:-shortel}
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD:-shortel_pass}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      ID_GENERATOR_URL: http://id-generator-service:8086
+      TENANT_SERVICE_URL: http://tenant-service:8085
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      id-generator-service:
+        condition: service_healthy
+      tenant-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8082/actuator/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - shortel-network
+
+  redirect-service:
+    build:
+      context: .
+      dockerfile: redirect-service/Dockerfile
+    container_name: shortel-redirect
+    ports:
+      - "8083:8083"
+    environment:
+      SERVER_PORT: 8083
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-shortel}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: ${MYSQL_USER:-shortel}
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD:-shortel_pass}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/actuator/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - shortel-network
+
+  analytics-service:
+    build:
+      context: .
+      dockerfile: analytics-service/Dockerfile
+    container_name: shortel-analytics
+    ports:
+      - "8084:8084"
+    environment:
+      SERVER_PORT: 8084
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-shortel}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: ${MYSQL_USER:-shortel}
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD:-shortel_pass}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8084/actuator/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - shortel-network
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: api-gateway/Dockerfile
+    container_name: shortel-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      SERVER_PORT: 8080
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      JWT_SECRET: ${JWT_SECRET:-ShortelDevSecretKeyMustBeAtLeast256BitsLongForHMACSHA256Algorithm}
+      AUTH_SERVICE_URL: http://auth-service:8081
+      URL_SERVICE_URL: http://url-service:8082
+      REDIRECT_SERVICE_URL: http://redirect-service:8083
+      ANALYTICS_SERVICE_URL: http://analytics-service:8084
+      TENANT_SERVICE_URL: http://tenant-service:8085
+    depends_on:
+      redis:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+      url-service:
+        condition: service_healthy
+      redirect-service:
+        condition: service_healthy
+      analytics-service:
+        condition: service_healthy
+      tenant-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 150s
+    networks:
+      - shortel-network
