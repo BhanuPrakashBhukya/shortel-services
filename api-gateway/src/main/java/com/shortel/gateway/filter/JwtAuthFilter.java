@@ -3,7 +3,6 @@ package com.shortel.gateway.filter;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.security.Keys;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
@@ -15,36 +14,43 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
-import javax.crypto.SecretKey;
-import java.nio.charset.StandardCharsets;
+import java.security.KeyFactory;
+import java.security.PublicKey;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.Base64;
 import java.util.List;
 
 /**
- * Global JWT validation filter.
- * Public paths (auth/**, redirect) are excluded.
- * On valid JWT: injects X-User-Id and X-User-Role headers for downstream services.
+ * Global JWT validation filter (RS256).
+ *
+ * Public paths are allowed through without a token.
+ * On a valid JWT the filter injects trusted headers for downstream services:
+ *   X-User-Id      → JWT sub claim (userId)
+ *   X-User-Role    → role claim
+ *   X-User-Email   → email claim
+ *   X-Tenant-Id    → tenantId claim (if present)
  */
 @Slf4j
 @Component
 public class JwtAuthFilter implements GlobalFilter, Ordered {
 
-    private static final List<String> PUBLIC_PATHS = List.of(
-        "/auth/", "/actuator/", "/r/", "/resolve/"
+    private static final List<String> PUBLIC_PREFIXES = List.of(
+        "/auth/", "/actuator/", "/resolve/"
     );
-    // Short code pattern — 4-10 alphanumeric chars directly on the root path
+    // 4-10 alphanumeric chars directly at root — short-code redirect (public)
     private static final String SHORT_CODE_PATTERN = "^/[A-Za-z0-9]{4,10}$";
 
-    private final SecretKey signingKey;
+    private final PublicKey publicKey;
 
-    public JwtAuthFilter(@Value("${jwt.secret}") String secret) {
-        this.signingKey = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
+    public JwtAuthFilter(@Value("${jwt.rsa.public-key}") String publicKeyBase64) throws Exception {
+        this.publicKey = loadPublicKey(publicKeyBase64);
+        log.info("JwtAuthFilter initialised — RS256 public key loaded");
     }
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
         String path = exchange.getRequest().getURI().getPath();
 
-        // Allow public paths without JWT
         if (isPublic(path)) {
             return chain.filter(exchange);
         }
@@ -57,24 +63,26 @@ public class JwtAuthFilter implements GlobalFilter, Ordered {
 
         try {
             Claims claims = Jwts.parser()
-                .verifyWith(signingKey)
+                .verifyWith(publicKey)
                 .build()
                 .parseSignedClaims(authHeader.substring(7))
                 .getPayload();
 
-            // Inject trusted headers for downstream services
-            ServerWebExchange mutated = exchange.mutate()
-                .request(r -> r
-                    .header("X-User-Id",   claims.getSubject())
-                    .header("X-User-Role", claims.get("role", String.class))
-                    .header("X-User-Email", claims.get("email", String.class))
-                )
-                .build();
+            var requestBuilder = exchange.getRequest().mutate()
+                .header("X-User-Id",    claims.getSubject())
+                .header("X-User-Role",  claims.get("role",     String.class))
+                .header("X-User-Email", claims.get("email",    String.class));
 
-            return chain.filter(mutated);
+            // Inject tenant ID if present in token
+            Object tenantId = claims.get("tenantId");
+            if (tenantId != null) {
+                requestBuilder.header("X-Tenant-Id", tenantId.toString());
+            }
+
+            return chain.filter(exchange.mutate().request(requestBuilder.build()).build());
 
         } catch (JwtException e) {
-            log.debug("JWT validation failed for path {}: {}", path, e.getMessage());
+            log.debug("JWT validation failed for {}: {}", path, e.getMessage());
             exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
             return exchange.getResponse().setComplete();
         }
@@ -82,11 +90,16 @@ public class JwtAuthFilter implements GlobalFilter, Ordered {
 
     private boolean isPublic(String path) {
         if (path.matches(SHORT_CODE_PATTERN)) return true;
-        return PUBLIC_PATHS.stream().anyMatch(path::startsWith);
+        return PUBLIC_PREFIXES.stream().anyMatch(path::startsWith);
     }
 
     @Override
     public int getOrder() {
-        return -100; // Run before route filters
+        return -100; // runs before all route filters
+    }
+
+    private PublicKey loadPublicKey(String base64) throws Exception {
+        byte[] bytes = Base64.getDecoder().decode(base64.replaceAll("\\s+", ""));
+        return KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(bytes));
     }
 }

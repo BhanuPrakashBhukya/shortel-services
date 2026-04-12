@@ -1,6 +1,22 @@
 CREATE DATABASE IF NOT EXISTS shortel;
 USE shortel;
 
+-- ── Users ──────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS users (
+  id            BIGINT        NOT NULL AUTO_INCREMENT,
+  email         VARCHAR(255)  NOT NULL,
+  password_hash VARCHAR(60)   NOT NULL,    -- BCrypt cost-10 hash
+  name          VARCHAR(255),
+  role          VARCHAR(50)   NOT NULL DEFAULT 'USER',
+  tenant_id     BIGINT,                    -- FK to tenants (nullable until tenant is created)
+  is_active     TINYINT(1)    DEFAULT 1,
+  created_at    DATETIME      DEFAULT NOW(),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_email (email),
+  INDEX idx_tenant (tenant_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
 CREATE TABLE IF NOT EXISTS tenants (
   id          BIGINT        NOT NULL AUTO_INCREMENT,
   name        VARCHAR(255)  NOT NULL,

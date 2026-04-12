@@ -4,11 +4,13 @@ server:
 spring:
   application:
     name: api-gateway
+
   data:
     redis:
       host: ${SPRING_DATA_REDIS_HOST:localhost}
       port: ${SPRING_DATA_REDIS_PORT:6379}
       timeout: 2000ms
+
   cloud:
     gateway:
       default-filters:
@@ -19,8 +21,10 @@ spring:
             allowedOrigins: "*"
             allowedMethods: "*"
             allowedHeaders: "*"
+
       routes:
-        # Auth Service
+
+        # ── Auth Service ───────────────────────────────────────────────────
         - id: auth-service
           uri: ${AUTH_SERVICE_URL:http://localhost:8081}
           predicates:
@@ -30,8 +34,12 @@ spring:
               args:
                 name: auth-cb
                 fallbackUri: forward:/fallback
+            - name: RequestRateLimiter
+              args:
+                rate-limiter: "#{@authRateLimiter}"
+                key-resolver: "#{@rateLimitKeyResolver}"
 
-        # URL Service
+        # ── URL Service ────────────────────────────────────────────────────
         - id: url-service
           uri: ${URL_SERVICE_URL:http://localhost:8082}
           predicates:
@@ -41,8 +49,12 @@ spring:
               args:
                 name: url-cb
                 fallbackUri: forward:/fallback
+            - name: RequestRateLimiter
+              args:
+                rate-limiter: "#{@createRateLimiter}"
+                key-resolver: "#{@rateLimitKeyResolver}"
 
-        # Analytics Service
+        # ── Analytics Service ──────────────────────────────────────────────
         - id: analytics-service
           uri: ${ANALYTICS_SERVICE_URL:http://localhost:8084}
           predicates:
@@ -52,8 +64,12 @@ spring:
               args:
                 name: analytics-cb
                 fallbackUri: forward:/fallback
+            - name: RequestRateLimiter
+              args:
+                rate-limiter: "#{@createRateLimiter}"
+                key-resolver: "#{@rateLimitKeyResolver}"
 
-        # Tenant Service
+        # ── Tenant Service ─────────────────────────────────────────────────
         - id: tenant-service
           uri: ${TENANT_SERVICE_URL:http://localhost:8085}
           predicates:
@@ -63,8 +79,12 @@ spring:
               args:
                 name: tenant-cb
                 fallbackUri: forward:/fallback
+            - name: RequestRateLimiter
+              args:
+                rate-limiter: "#{@createRateLimiter}"
+                key-resolver: "#{@rateLimitKeyResolver}"
 
-        # Redirect Service — short codes (alphanumeric, length validated in controller)
+        # ── Redirect Service — short codes (hot path) ──────────────────────
         - id: redirect-service
           uri: ${REDIRECT_SERVICE_URL:http://localhost:8083}
           predicates:
@@ -74,13 +94,18 @@ spring:
               args:
                 name: redirect-cb
                 fallbackUri: forward:/fallback
+            - name: RequestRateLimiter
+              args:
+                rate-limiter: "#{@redirectRateLimiter}"
+                key-resolver: "#{@rateLimitKeyResolver}"
 
-        # Redirect info endpoint
+        # ── Redirect info endpoint (public, no rate limit) ─────────────────
         - id: redirect-resolve
           uri: ${REDIRECT_SERVICE_URL:http://localhost:8083}
           predicates:
             - Path=/resolve/**
 
+# ── Circuit breaker configuration ──────────────────────────────────────────
 resilience4j:
   circuitbreaker:
     instances:
@@ -105,8 +130,12 @@ resilience4j:
         failureRateThreshold: 50
         waitDurationInOpenState: 10s
 
+# ── JWT RS256 public key ────────────────────────────────────────────────────
+# Override JWT_RSA_PUBLIC_KEY env var in production (use Secrets Manager).
+# Must match the private key configured in auth-service.
 jwt:
-  secret: ${JWT_SECRET:ShortelDevSecretKeyMustBeAtLeast256BitsLongForHMACSHA256Algorithm}
+  rsa:
+    public-key: ${JWT_RSA_PUBLIC_KEY:MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA8pXw6aXXpYr/Iu4w9BnTBGvfnHO+anrmo6+zGgZFqTrnCQozagyv1V1MHo9VGE0TwthAWnG2F4TfUyKjAoWf3OzB6cLLlZ1wfIt2u5xsoHEIrBq6qzn1gCQxtiSZnp7uwmS+bxPnW/vc8DWVLuCZETpse4OKL6oUWOoehiifVPzLd1nK0GHrSVNMma/u2IU0ZolpCCmDKtGAWr+hrfXkaQtGcH+N1MVe2vdEpoCPHh3n+zFmYKtoogtUjiC0V3lov7x09J7La3eisHEheLuyPPwGkaoyZTVafjJlHBHavtWe6hiY/dlVg+vev/zWwVlXBHJwSNohGl7ttSZw2WsluQIDAQAB}
 
 management:
   endpoints:
