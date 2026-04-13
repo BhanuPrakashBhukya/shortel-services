@@ -99,7 +99,7 @@ public class UrlService {
         tenantClient.incrementUrlUsage(tenantId);
 
         // Publish url.created event
-        publishUrlCreatedEvent(saved);
+        publishUrlEvent("URL_CREATED", saved);
 
         log.info("Created URL: code={} tenant={} createdBy={}", saved.getShortCode(), tenantId, userId);
         return saved;
@@ -145,6 +145,9 @@ public class UrlService {
         redis.delete(CACHE_PREFIX + code);
         cacheUrl(saved);
 
+        // Broadcast to invalidate Caffeine L1 caches in redirect-service pods
+        publishUrlEvent("URL_UPDATED", saved);
+
         log.info("Updated URL: code={} tenant={} userId={}", code, tenantId, userId);
         return saved;
     }
@@ -164,6 +167,10 @@ public class UrlService {
         url.setActive(false);
         urlRepository.save(url);
         redis.delete(CACHE_PREFIX + code);
+
+        // Broadcast to invalidate Caffeine L1 caches in redirect-service pods
+        publishUrlEvent("URL_DEACTIVATED", url);
+
         log.info("Deactivated URL: code={} tenant={} userId={}", code, tenantId, userId);
     }
 
@@ -209,17 +216,18 @@ public class UrlService {
         }
     }
 
-    private void publishUrlCreatedEvent(ShortenedUrl url) {
+    private void publishUrlEvent(String eventType, ShortenedUrl url) {
         try {
             String event = objectMapper.writeValueAsString(Map.of(
-                "event",     "URL_CREATED",
+                "event",     eventType,
                 "shortCode", url.getShortCode(),
+                "urlId",     url.getId(),
                 "tenantId",  url.getTenantId(),
                 "timestamp", LocalDateTime.now().toString()
             ));
             kafkaTemplate.send("shortel.url-events", url.getShortCode(), event);
         } catch (Exception e) {
-            log.warn("Failed to publish URL created event: {}", e.getMessage());
+            log.warn("Failed to publish {} event: {}", eventType, e.getMessage());
         }
     }
 }

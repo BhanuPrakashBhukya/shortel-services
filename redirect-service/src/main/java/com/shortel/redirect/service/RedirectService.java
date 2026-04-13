@@ -5,6 +5,8 @@ import com.shortel.redirect.entity.ShortenedUrl;
 import com.shortel.redirect.repository.UrlRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -35,6 +37,16 @@ public class RedirectService {
     public record ResolvedUrl(String longUrl, ShortenedUrl.Visibility visibility,
                                Long urlId, Long tenantId, boolean expired, String passwordHash) {}
 
+    /**
+     * Resolves a short code to its URL metadata.
+     *
+     * L1: Caffeine in-process cache (this annotation) — sub-millisecond, max 200 entries, 5-min TTL.
+     * L2: Redis — checked inside the method body on Caffeine miss.
+     * L3: MySQL read replica fallback — populates L2 on DB hit.
+     *
+     * Empty results (404) are never cached so transient DB misses don't persist.
+     */
+    @Cacheable(value = "resolvedUrls", key = "#code", unless = "#result == null || #result.isEmpty()")
     public Optional<ResolvedUrl> resolve(String code) {
         // L2: Redis cache lookup
         String cached = redis.opsForValue().get(CACHE_PREFIX + code);
@@ -67,6 +79,17 @@ public class RedirectService {
             u.getLongUrl(), u.getVisibility(), u.getId(), u.getTenantId(), u.isExpired(),
             u.getPasswordHash()
         ));
+    }
+
+    /**
+     * Evicts the given code from the Caffeine L1 cache.
+     * Called by {@link com.shortel.redirect.consumer.UrlEventConsumer} on URL_UPDATED
+     * and URL_DEACTIVATED events so that stale entries are purged immediately
+     * rather than waiting for the 5-minute TTL.
+     */
+    @CacheEvict(value = "resolvedUrls", key = "#code")
+    public void evictFromL1Cache(String code) {
+        // Annotation handles eviction — no method body needed
     }
 
     private void populateCache(ShortenedUrl url) {

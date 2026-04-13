@@ -31,6 +31,19 @@ spring:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
       acks: 0   # Fire-and-forget — analytics failure must NEVER block redirect
+    consumer:
+      group-id: redirect-cache-invalidation
+      auto-offset-reset: latest   # Only process future invalidation events; past ones are irrelevant on restart
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+  cache:
+    type: caffeine
+
+# Short-lived redirect token issued after successful password verification (spec §8.5)
+redirect:
+  token:
+    secret: ${REDIRECT_TOKEN_SECRET:ShortelRedirectTokenSecretKeyForDevelopmentOnlyMustChange}
+    ttl-minutes: 5
 
 management:
   endpoints:

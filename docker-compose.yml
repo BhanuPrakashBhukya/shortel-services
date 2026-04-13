@@ -221,6 +221,7 @@ services:
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      REDIRECT_TOKEN_SECRET: ${REDIRECT_TOKEN_SECRET:-ShortelRedirectTokenSecretKeyForDevelopmentOnlyMustChange}
     depends_on:
       mysql:
         condition: service_healthy
