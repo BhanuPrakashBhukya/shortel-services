@@ -83,8 +83,31 @@ public class QuotaService {
         return Duration.ofDays(days);
     }
 
+    /**
+     * Every 60 seconds: read each active tenant's Redis quota counters and
+     * persist the current values into the tenants table.
+     *
+     * Purpose: ensures billing data survives a Redis flush/restart. MySQL rows
+     * are the source-of-truth for end-of-month billing; Redis is the live cache.
+     */
     @Scheduled(fixedDelay = 60_000)
-    public void logQuotaSnapshot() {
-        log.debug("Quota snapshot scheduled flush (MySQL persistence to be implemented)");
+    public void syncQuotaToMySQL() {
+        try {
+            tenantRepository.findAllByActiveTrue().forEach(tenant -> {
+                try {
+                    long urlCount   = getUsed(urlKey(tenant.getId()));
+                    long clickCount = getUsed(clickKey(tenant.getId()));
+                    tenant.setUrlCount(urlCount);
+                    tenant.setClickCount(clickCount);
+                    tenantRepository.save(tenant);
+                    log.debug("Synced quota to MySQL: tenantId={} urls={} clicks={}",
+                        tenant.getId(), urlCount, clickCount);
+                } catch (Exception e) {
+                    log.warn("Failed to sync quota for tenantId={}: {}", tenant.getId(), e.getMessage());
+                }
+            });
+        } catch (Exception e) {
+            log.warn("Quota sync scheduler error: {}", e.getMessage());
+        }
     }
 }

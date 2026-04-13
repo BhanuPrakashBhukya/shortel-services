@@ -32,6 +32,14 @@ public class Tenant {
     @Column(name = "is_active")
     private boolean active = true;
 
+    /** Snapshot of current-month URL creations, synced from Redis every 60 s. */
+    @Column(name = "url_count")
+    private long urlCount = 0L;
+
+    /** Snapshot of current-month click count, synced from Redis every 60 s. */
+    @Column(name = "click_count")
+    private long clickCount = 0L;
+
     public enum Plan { FREE, PAID }
 
     public long getUrlQuota() {

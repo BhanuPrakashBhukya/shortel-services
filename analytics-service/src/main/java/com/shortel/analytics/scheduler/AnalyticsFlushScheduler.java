@@ -4,17 +4,23 @@ import com.shortel.analytics.repository.AnalyticsHourlyRepository;
 import com.shortel.analytics.service.AnalyticsCounterService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.Cursor;
+import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
-import java.util.Set;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Micro-batch flush: every 5 seconds, atomically reset Redis counters
  * and upsert totals into analytics_hourly MySQL table.
+ *
+ * Uses SCAN (cursor-based, O(1) per step) instead of KEYS (O(N), blocks Redis)
+ * to enumerate active URL counter keys.
  */
 @Slf4j
 @Component
@@ -27,8 +33,8 @@ public class AnalyticsFlushScheduler {
 
     @Scheduled(fixedDelay = 5_000)
     public void flush() {
-        Set<String> keys = redis.keys("clicks:*");
-        if (keys == null || keys.isEmpty()) return;
+        List<String> keys = scanClickKeys();
+        if (keys.isEmpty()) return;
 
         LocalDateTime hourBucket = LocalDateTime.now().truncatedTo(ChronoUnit.HOURS);
 
@@ -45,5 +51,22 @@ public class AnalyticsFlushScheduler {
                 log.warn("Failed to flush analytics for key {}: {}", key, e.getMessage());
             }
         }
+    }
+
+    /**
+     * Enumerate all {@code clicks:*} keys using SCAN cursor iteration.
+     * Unlike KEYS, SCAN is non-blocking: it returns a cursor-based page of
+     * results (count=100 is a hint to Redis, not a hard limit) and does not
+     * lock the server for the duration of the scan.
+     */
+    private List<String> scanClickKeys() {
+        List<String> keys = new ArrayList<>();
+        ScanOptions options = ScanOptions.scanOptions().match("clicks:*").count(100).build();
+        try (Cursor<String> cursor = redis.scan(options)) {
+            cursor.forEachRemaining(keys::add);
+        } catch (Exception e) {
+            log.warn("SCAN for click keys failed: {}", e.getMessage());
+        }
+        return keys;
     }
 }

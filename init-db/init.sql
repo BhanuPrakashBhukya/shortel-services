@@ -18,12 +18,14 @@ CREATE TABLE IF NOT EXISTS users (
 
 
 CREATE TABLE IF NOT EXISTS tenants (
-  id          BIGINT        NOT NULL AUTO_INCREMENT,
-  name        VARCHAR(255)  NOT NULL,
-  email       VARCHAR(255)  NOT NULL,
-  plan        ENUM('FREE','PAID') DEFAULT 'FREE',
-  created_at  DATETIME      DEFAULT NOW(),
-  is_active   TINYINT(1)    DEFAULT 1,
+  id           BIGINT        NOT NULL AUTO_INCREMENT,
+  name         VARCHAR(255)  NOT NULL,
+  email        VARCHAR(255)  NOT NULL,
+  plan         ENUM('FREE','PAID') DEFAULT 'FREE',
+  created_at   DATETIME      DEFAULT NOW(),
+  is_active    TINYINT(1)    DEFAULT 1,
+  url_count    BIGINT        DEFAULT 0,   -- current-month URL count snapshot (synced from Redis every 60s)
+  click_count  BIGINT        DEFAULT 0,   -- current-month click count snapshot (synced from Redis every 60s)
   PRIMARY KEY (id),
   UNIQUE KEY uq_email (email)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -29,8 +29,11 @@ public class RedirectService {
     private final UrlRepository       urlRepository;
     private final ObjectMapper        objectMapper;
 
+    /**
+     * @param passwordHash BCrypt hash if the URL is password-protected; null otherwise.
+     */
     public record ResolvedUrl(String longUrl, ShortenedUrl.Visibility visibility,
-                               Long urlId, Long tenantId, boolean expired) {}
+                               Long urlId, Long tenantId, boolean expired, String passwordHash) {}
 
     public Optional<ResolvedUrl> resolve(String code) {
         // L2: Redis cache lookup
@@ -42,12 +45,14 @@ public class RedirectService {
                 String expiresAtStr = (String) data.get("expiresAt");
                 boolean expired = expiresAtStr != null && !expiresAtStr.isBlank()
                     && LocalDateTime.now().isAfter(LocalDateTime.parse(expiresAtStr));
+                String pwHash = (String) data.get("passwordHash");
                 return Optional.of(new ResolvedUrl(
                     (String) data.get("longUrl"),
                     ShortenedUrl.Visibility.valueOf((String) data.getOrDefault("visibility", "PUBLIC")),
                     data.get("urlId") != null ? ((Number) data.get("urlId")).longValue() : null,
                     data.get("tenantId") != null ? ((Number) data.get("tenantId")).longValue() : null,
-                    expired
+                    expired,
+                    (pwHash != null && !pwHash.isBlank()) ? pwHash : null
                 ));
             } catch (Exception e) {
                 log.warn("Cache parse error for code {}: {}", code, e.getMessage());
@@ -59,7 +64,8 @@ public class RedirectService {
         dbResult.ifPresent(this::populateCache);
 
         return dbResult.map(u -> new ResolvedUrl(
-            u.getLongUrl(), u.getVisibility(), u.getId(), u.getTenantId(), u.isExpired()
+            u.getLongUrl(), u.getVisibility(), u.getId(), u.getTenantId(), u.isExpired(),
+            u.getPasswordHash()
         ));
     }
 
@@ -71,11 +77,12 @@ public class RedirectService {
             if (!ttl.isNegative() && !ttl.isZero()) {
                 redis.opsForValue().set(CACHE_PREFIX + url.getShortCode(),
                     objectMapper.writeValueAsString(Map.of(
-                        "longUrl",    url.getLongUrl(),
-                        "visibility", url.getVisibility().name(),
-                        "expiresAt",  url.getExpiresAt() != null ? url.getExpiresAt().toString() : "",
-                        "urlId",      url.getId(),
-                        "tenantId",   url.getTenantId()
+                        "longUrl",      url.getLongUrl(),
+                        "visibility",   url.getVisibility().name(),
+                        "expiresAt",    url.getExpiresAt() != null ? url.getExpiresAt().toString() : "",
+                        "urlId",        url.getId(),
+                        "tenantId",     url.getTenantId(),
+                        "passwordHash", url.getPasswordHash() != null ? url.getPasswordHash() : ""
                     )), ttl);
             }
         } catch (Exception e) {
